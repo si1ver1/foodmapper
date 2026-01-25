@@ -91,11 +91,12 @@ def create_default_admin():
         admin = db.query(models.User).filter(models.User.username == "admin").first()
         if not admin:
             print("Creating default admin user...")
-            hashed_pw = get_password_hash("admin")
+            # Use the secure password requested by user
+            hashed_pw = get_password_hash("!2Nq!*iI$g5DDAGCTa")
             new_admin = models.User(username="admin", hashed_password=hashed_pw)
             db.add(new_admin)
             db.commit()
-            print("Default admin created (admin/admin).")
+            print("Default admin created.")
     except Exception as e:
         print(f"Error creating admin: {e}")
     finally:
