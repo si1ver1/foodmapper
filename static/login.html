@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - FoodMapper</title>
+    <link href="/static/css/output.css" rel="stylesheet">
+    <link rel="icon" type="image/png" href="/favicon.png">
+</head>
+
+<body class="bg-gray-100 dark:bg-darkbg flex flex-col items-center justify-center min-h-screen">
+
+    <div class="bg-white dark:bg-darkcard p-8 rounded-xl shadow-lg w-full max-w-sm">
+        <h1 class="text-2xl font-bold mb-6 text-center text-gray-800 dark:text-gray-100">Welcome Back</h1>
+        <form id="login-form" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">Username</label>
+                <input type="text" id="username"
+                    class="w-full p-2 border rounded dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100" required>
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">Password</label>
+                <input type="password" id="password"
+                    class="w-full p-2 border rounded dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100" required>
+            </div>
+            <div id="error-msg" class="text-red-500 text-sm hidden">Invalid credentials</div>
+            <button type="submit"
+                class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded transition">
+                Log In
+            </button>
+
+            <div class="relative my-6">
+                <div class="absolute inset-0 flex items-center">
+                    <div class="w-full border-t border-gray-300 dark:border-gray-600"></div>
+                </div>
+                <div class="relative flex justify-center text-sm">
+                    <span class="px-2 bg-white dark:bg-darkcard text-gray-500">Or continue with</span>
+                </div>
+            </div>
+
+            <a href="/login/google"
+                class="w-full flex items-center justify-center gap-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-medium py-2 rounded transition">
+                <img src="https://www.svgrepo.com/show/475656/google-color.svg" class="w-4 h-4" alt="Google">
+                Sign in with Google
+            </a>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorMsg = document.getElementById('error-msg');
+
+            const formData = new FormData();
+            formData.append('username', username);
+            formData.append('password', password);
+
+            try {
+                const res = await fetch('/api/token', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    localStorage.setItem('access_token', data.access_token);
+                    window.location.href = '/';
+                } else {
+                    errorMsg.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorMsg.innerText = "Network Error";
+                errorMsg.classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+
+</html>
