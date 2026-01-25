@@ -91,8 +91,13 @@ def create_default_admin():
         admin = db.query(models.User).filter(models.User.username == "admin").first()
         if not admin:
             print("Creating default admin user...")
-            # Use the secure password requested by user
-            hashed_pw = get_password_hash("!2Nq!*iI$g5DDAGCTa")
+            # Use password from env or fail secure
+            admin_pw = os.getenv("ADMIN_PASSWORD")
+            if not admin_pw:
+                print("WARNING: ADMIN_PASSWORD not set. Cannot create admin user safely.")
+                return 
+
+            hashed_pw = get_password_hash(admin_pw)
             new_admin = models.User(username="admin", hashed_password=hashed_pw)
             db.add(new_admin)
             db.commit()
