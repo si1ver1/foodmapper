@@ -606,7 +606,7 @@ def delete_restaurant(restaurant_id: int, current_user: models.User = Depends(ge
 # --- Config Endpoint (Critical for Google Maps) ---
 @app.get("/api/config")
 def get_config():
-    return {"google_maps_api_key": os.getenv("GOOGLE_MAPS_API_KEY")}
+    return {"googleMapsApiKey": os.getenv("GOOGLE_MAPS_API_KEY")}
 
 # Serve Static Files (Frontend)
 app.mount("/static", StaticFiles(directory="static"), name="static")
