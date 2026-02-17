@@ -64,6 +64,7 @@ class Group(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True) # Removed unique=True to allow multiple users to have "Favorites" etc.
     share_token = Column(String, unique=True, index=True, nullable=True)
+    is_published = Column("is_published", Integer, default=0) # 0=False, 1=True (SQLite boolean)
     owner_id = Column("owner_id", Integer, ForeignKey("users.id"), nullable=True) # Nullable for migration
 
     owner = relationship("User", back_populates="groups")

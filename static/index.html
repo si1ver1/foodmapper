@@ -63,7 +63,18 @@
         .dark-map-tiles {
             filter: invert(100%) hue-rotate(210deg) brightness(95%) contrast(100%) saturate(140%);
         }
+
+        /* Toggle Switch Fallback */
+        .toggle-publish:checked~.toggle-bg {
+            background-color: #2563eb;
+        }
+
+        .toggle-publish:checked~.dot {
+            transform: translateX(100%);
+        }
     </style>
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#2563eb">
 </head>
 
 <body
@@ -97,6 +108,13 @@
     <!-- Filters Bar (Mobile/Desktop friendly) -->
     <div
         class="bg-white dark:bg-darkcard border-b border-gray-200 dark:border-gray-700 px-4 py-2 flex gap-2 overflow-x-auto scrollbar-hide shrink-0 z-10 items-center">
+        <!-- Local Search -->
+        <div class="relative shrink-0">
+            <i class="fa-solid fa-search absolute left-2 top-1/2 transform -translate-y-1/2 text-gray-400 text-xs"></i>
+            <input type="text" id="filter-search" placeholder="Search..."
+                class="pl-7 pr-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-full bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 w-32 focus:w-48 transition-all">
+        </div>
+
         <button id="btn-help-choose"
             class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 rounded-full text-sm font-bold shadow-md transition whitespace-nowrap flex items-center gap-1 shrink-0">
             <i class="fa-solid fa-wand-magic-sparkles"></i> Help Me Choose
@@ -434,6 +452,15 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <script src="/static/js/app.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/static/sw.js')
+                    .then(registration => console.log('SW registered'))
+                    .catch(err => console.log('SW registration failed: ', err));
+            });
+        }
+    </script>
 </body>
 
 </html>

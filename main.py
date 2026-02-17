@@ -2,10 +2,10 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import text
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import models
 from database import engine, get_db
 import os
@@ -15,15 +15,38 @@ from datetime import datetime, timedelta
 from jose import JWTError, jwt
 import uuid
 
+# --- Startup & Default User ---
+def create_default_admin():
+    db = next(get_db())
+    try:
+        # Check if any user exists
+        user = db.query(models.User).filter(models.User.username == "Adam").first()
+        if not user:
+            print("Creating default admin user 'Adam'...")
+            admin_pwd = os.getenv("ADMIN_PASSWORD", "admin") # Fallback to 'admin' if env missing
+            hashed_pwd = get_password_hash(admin_pwd)
+            user = models.User(username="Adam", hashed_password=hashed_pwd)
+            db.add(user)
+            db.commit()
+            print("Default admin user 'Adam' created.")
+        else:
+            print("Admin user 'Adam' already exists.")
+    except Exception as e:
+        print(f"Error creating default admin: {e}")
+    finally:
+        db.close()
+
 load_dotenv()
+
+models.Base.metadata.create_all(bind=engine)
+create_default_admin()
+
+app = FastAPI()
 
 # --- Auth Configuration ---
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
-    # Fail secure
-    # For dev convenience we can keep a fallback BUT print a HUGE warning
-    print("WARNING: SECRET_KEY not set. Using insecure default. DO NOT USE IN PRODUCTION.")
-    SECRET_KEY = "super_secret_dev_key_123"
+    raise ValueError("No SECRET_KEY set for Flask application. Please set SECRET_KEY environment variable.")
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 # Reduced from 30 days
@@ -47,12 +70,27 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+# --- Auth Refactor: HttpOnly Cookies ---
+
+from fastapi import Request, Response
+
+def get_token_from_cookie(request: Request):
+    token = request.cookies.get("access_token")
+    if not token:
+        return None
+    return token
+
+async def get_current_user_cookie(request: Request, db: Session = Depends(get_db)):
+    token = get_token_from_cookie(request)
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
     )
+    if not token:
+        # Check if we are in a "public" route or just failing auth
+        # For get_current_user, we expect auth.
+        raise credentials_exception
+    
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
@@ -60,74 +98,58 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
             raise credentials_exception
     except JWTError:
         raise credentials_exception
+        
     user = db.query(models.User).filter(models.User.username == username).first()
     if user is None:
         raise credentials_exception
     return user
 
-async def get_optional_user(token: Optional[str] = None, db: Session = Depends(get_db)):
-    # Helper for routes that might allow access but behave differently (e.g., public share vs admin view)
-    # Note: OAuth2PasswordBearer(auto_error=False) would be cleaner but let's keep it simple for now
+async def get_optional_user_cookie(request: Request, db: Session = Depends(get_db)):
+    token = get_token_from_cookie(request)
     if not token:
         return None
     try:
-        # We manually check the header if we wanted to support optional auth on the SAME endpoint
-        # But usually we separate public/private endpoints.
-        # For this app, we will use separate logic.
-        pass
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if not username: return None
+        user = db.query(models.User).filter(models.User.username == username).first()
+        return user
     except:
         return None
-    return None
 
-# Create Tables
-models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+@app.get("/api/users/me")
+def read_users_me(current_user: models.User = Depends(get_current_user_cookie)):
+    return {"username": current_user.username, "email": current_user.email}
 
-# --- Startup Logic ---
-def create_default_admin():
-    db = next(get_db())
-    try:
-        admin = db.query(models.User).filter(models.User.username == "admin").first()
-        if not admin:
-            print("Creating default admin user...")
-            # Use password from env or fail secure
-            admin_pw = os.getenv("ADMIN_PASSWORD")
-            if not admin_pw:
-                print("WARNING: ADMIN_PASSWORD not set. Cannot create admin user safely.")
-                return 
-
-            hashed_pw = get_password_hash(admin_pw)
-            new_admin = models.User(username="admin", hashed_password=hashed_pw)
-            db.add(new_admin)
-            db.commit()
-            print("Default admin created.")
-    except Exception as e:
-        print(f"Error creating admin: {e}")
-    finally:
-        db.close()
-
-# Invoke startup
-create_default_admin()
-
-@app.get("/api/config")
-def get_config():
-    return {"googleMapsApiKey": os.getenv("GOOGLE_MAPS_API_KEY")}
+@app.post("/api/logout")
+def logout(response: Response):
+    response.delete_cookie("access_token")
+    return {"ok": True}
 
 @app.post("/api/token")
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login_for_access_token(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == form_data.username).first()
     if not user or not user.hashed_password or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
         )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    
+    # Set HttpOnly Cookie
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=False, # Set to True in Production with HTTPS
+        samesite="lax",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+    return {"ok": True}
 
 # --- Google OAuth ---
 import os
@@ -136,7 +158,7 @@ if os.getenv("DEBUG") == "True":
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.requests import Request
+from starlette.requests import Request  # Re-import to be safe or use existing
 from authlib.integrations.starlette_client import OAuth
 
 # Add SessionMiddleware for Authlib
@@ -152,6 +174,36 @@ oauth.register(
         'scope': 'openid email profile'
     }
 )
+
+# --- Admin Backup Endpoint ---
+@app.get("/api/admin/backup")
+def download_database(current_user: models.User = Depends(get_current_user_cookie)):
+    if current_user.username != "Adam":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # Check if using SQLite
+    db_url = os.getenv("DATABASE_URL", "sqlite:///./foodmapper_v2.db")
+    if not db_url.startswith("sqlite"):
+        raise HTTPException(status_code=400, detail="Backup only supported for SQLite")
+    
+    # Extract path from URL (remove sqlite:///)
+    # Handle absolute paths (sqlite:////data/...) vs relative (sqlite:///./...)
+    if db_url.startswith("sqlite:////"):
+        file_path = db_url[10:] # remove sqlite:/// leaving /data/...
+    elif db_url.startswith("sqlite:///"):
+        file_path = db_url[10:] # relative path?
+    else:
+        file_path = "foodmapper_v2.db"
+
+    if not os.path.exists(file_path):
+         # Try common fallback if url parsing failed or using relative defaults
+         if os.path.exists("foodmapper_v2.db"):
+             file_path = "foodmapper_v2.db"
+         else:
+             raise HTTPException(status_code=404, detail=f"Database file not found at {file_path}")
+
+    return FileResponse(path=file_path, filename="foodmapper_backup.db", media_type='application/x-sqlite3')
+
 
 @app.get("/login/google")
 async def login_google(request: Request):
@@ -206,7 +258,16 @@ async def auth_google_callback(request: Request, db: Session = Depends(get_db)):
             data={"sub": user.username}, expires_delta=access_token_expires
         )
         
-        response = RedirectResponse(f"/#access_token={access_token}")
+        # CHANGED: Set Cookie via RedirectResponse
+        response = RedirectResponse(url="/")
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=False,
+            samesite="lax",
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        )
         return response
 
     except Exception as e:
@@ -249,6 +310,16 @@ def migrate_data():
                         migrated += 1
             db.commit()
             print(f"Migration complete: Updated {migrated} restaurants.")
+        
+        # Check for is_published column in groups
+        try:
+            db.execute(text("SELECT is_published FROM groups LIMIT 1"))
+        except Exception:
+            print("Migrating schema: Adding is_published to groups table...")
+            db.execute(text("ALTER TABLE groups ADD COLUMN is_published INTEGER DEFAULT 0"))
+            db.commit()
+            print("Schema migration complete.")
+
     except Exception as e:
         print(f"Migration warning: {e}")
     finally:
@@ -266,19 +337,18 @@ class CuisineCreate(CuisineBase):
 
 class Cuisine(CuisineBase):
     id: int
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class GroupBase(BaseModel):
     name: str
+    is_published: bool = False
 
 class GroupCreate(GroupBase):
     pass
 
 class Group(GroupBase):
     id: int
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class RestaurantBase(BaseModel):
     name: str
@@ -309,13 +379,12 @@ class Restaurant(BaseModel): # Redefining to flatten structure
     cuisines: List[Cuisine] # <--- Changed from single 'cuisine'
     groups: List[Group] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- API Routes ---
 
 @app.post("/api/cuisines", response_model=Cuisine)
-def create_cuisine(cuisine: CuisineCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_cuisine(cuisine: CuisineCreate, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     db_cuisine = db.query(models.Cuisine).filter(models.Cuisine.name == cuisine.name).first()
     if db_cuisine:
         return db_cuisine
@@ -331,7 +400,7 @@ def read_cuisines(db: Session = Depends(get_db)):
     return db.query(models.Cuisine).all()
 
 @app.delete("/api/cuisines/{cuisine_id}")
-def delete_cuisine(cuisine_id: int, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_cuisine(cuisine_id: int, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     c = db.query(models.Cuisine).filter(models.Cuisine.id == cuisine_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Cuisine not found")
@@ -344,7 +413,7 @@ def delete_cuisine(cuisine_id: int, current_user: models.User = Depends(get_curr
     return {"ok": True}
 
 @app.post("/api/groups", response_model=Group)
-def create_group(group: GroupCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_group(group: GroupCreate, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     # Check if exists for this user (or global if we want simple unique names)
     db_group = db.query(models.Group).filter(models.Group.name == group.name).first()
     if db_group:
@@ -357,20 +426,61 @@ def create_group(group: GroupCreate, current_user: models.User = Depends(get_cur
     return new_group
 
 @app.get("/api/groups", response_model=List[Group])
-def read_groups(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def read_groups(current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     return db.query(models.Group).filter(models.Group.owner_id == current_user.id).all()
 
 @app.delete("/api/groups/{group_id}")
-def delete_group(group_id: int, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_group(group_id: int, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     g = db.query(models.Group).filter(models.Group.id == group_id).first()
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
     db.delete(g)
     db.commit()
+    db.delete(g)
+    db.commit()
     return {"ok": True}
 
+@app.put("/api/groups/{group_id}", response_model=Group)
+def update_group(group_id: int, group: GroupCreate, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
+    g = db.query(models.Group).filter(models.Group.id == group_id, models.Group.owner_id == current_user.id).first()
+    if not g:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    g.name = group.name
+    g.is_published = group.is_published
+    db.commit()
+    db.refresh(g)
+    return g
+
+@app.get("/api/groups/public")
+def read_public_groups(db: Session = Depends(get_db)):
+    groups = db.query(models.Group).filter(models.Group.is_published == True).options(joinedload(models.Group.owner)).all()
+    # Pydantic v2 from_attributes sometimes is tricky with nested optionals if not perfect.
+    # Let's manual return to be 100% sure.
+    res = []
+    for g in groups:
+        owner_data = None
+        if g.owner:
+            owner_data = {"username": g.owner.username}
+        
+        res.append({
+            "id": g.id,
+            "name": g.name,
+            "is_published": g.is_published,
+            "owner": owner_data
+        })
+    return res
+
+@app.get("/api/groups/{group_id}/public", response_model=List[Restaurant])
+def view_public_group(group_id: int, db: Session = Depends(get_db)):
+    group = db.query(models.Group).filter(models.Group.id == group_id, models.Group.is_published == True).first()
+    if not group:
+         raise HTTPException(status_code=404, detail="Public group not found")
+    return group.restaurants
+
+
 @app.post("/api/groups/{group_id}/share")
-def share_group(group_id: int, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def share_group(group_id: int, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     g = db.query(models.Group).filter(models.Group.id == group_id).first()
     if not g:
          raise HTTPException(status_code=404, detail="Group not found")
@@ -393,7 +503,7 @@ def view_shared_group(token: str, db: Session = Depends(get_db)):
     return group.restaurants
 
 @app.post("/api/restaurants", response_model=Restaurant)
-def create_restaurant(r: RestaurantCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_restaurant(r: RestaurantCreate, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     db_rest = models.Restaurant(
         name=r.name,
         address=r.address,
@@ -423,11 +533,33 @@ def create_restaurant(r: RestaurantCreate, current_user: models.User = Depends(g
     return db_rest
 
 @app.get("/api/restaurants", response_model=List[Restaurant])
-def read_restaurants(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(models.Restaurant).filter(models.Restaurant.owner_id == current_user.id).all()
+def read_restaurants(
+    search: Optional[str] = None,
+    sort_by: Optional[str] = "name",
+    current_user: models.User = Depends(get_current_user_cookie),
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.Restaurant).filter(models.Restaurant.owner_id == current_user.id)
+    
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            (models.Restaurant.name.ilike(search_term)) | 
+            (models.Restaurant.address.ilike(search_term)) |
+            (models.Restaurant.personal_notes.ilike(search_term))
+        )
+    
+    if sort_by == "rating":
+        # Sort by rating desc (nulls last)
+        query = query.order_by(models.Restaurant.rating.desc().nullslast())
+    else:
+        # Default name
+        query = query.order_by(models.Restaurant.name.asc())
+        
+    return query.all()
 
 @app.put("/api/restaurants/{restaurant_id}", response_model=Restaurant)
-def update_restaurant(restaurant_id: int, restaurant: RestaurantCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_restaurant(restaurant_id: int, restaurant: RestaurantCreate, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     db_restaurant = db.query(models.Restaurant).filter(models.Restaurant.id == restaurant_id, models.Restaurant.owner_id == current_user.id).first()
     if not db_restaurant:
         # Verify if it exists at all to give better error?? No, standard 404 is safer for privacy.
@@ -461,7 +593,7 @@ def update_restaurant(restaurant_id: int, restaurant: RestaurantCreate, current_
     return db_restaurant
 
 @app.delete("/api/restaurants/{restaurant_id}")
-def delete_restaurant(restaurant_id: int, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_restaurant(restaurant_id: int, current_user: models.User = Depends(get_current_user_cookie), db: Session = Depends(get_db)):
     db_restaurant = db.query(models.Restaurant).filter(models.Restaurant.id == restaurant_id, models.Restaurant.owner_id == current_user.id).first()
     if not db_restaurant:
         raise HTTPException(status_code=404, detail="Restaurant not found")

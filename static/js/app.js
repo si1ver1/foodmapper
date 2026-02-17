@@ -12,151 +12,6 @@ document.addEventListener('DOMContentLoaded', () => {
             .replace(/'/g, "&#039;");
     }
 
-    // --- Authentication & Sharing State ---
-    let token = localStorage.getItem('access_token');
-
-    // --- Check for OAuth Redirect Token ---
-    const hash = window.location.hash;
-    if (hash && hash.includes('access_token=')) {
-        const params = new URLSearchParams(hash.substring(1));
-        const accessToken = params.get('access_token');
-        if (accessToken) {
-            token = accessToken; // Update variable immediately
-            localStorage.setItem('access_token', accessToken);
-            // Clean URL
-            window.history.replaceState({}, document.title, window.location.pathname);
-        }
-    }
-    const pathParts = window.location.pathname.split('/');
-    const isSharedView = pathParts[1] === 'share';
-    const sharedToken = isSharedView ? pathParts[2] : null;
-
-    // Dom Elements that need hiding in shared mode
-    const addBtn = document.getElementById('add-btn');
-    const btnManageCuisines = document.getElementById('btn-manage-cuisines');
-    const btnManageGroups = document.getElementById('btn-manage-groups');
-    const logoutBtn = document.getElementById('logout-btn');
-    const loginBtn = document.getElementById('login-btn');
-
-    function parseJwt(token) {
-        var base64Url = token.split('.')[1];
-        var base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        var jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function (c) {
-            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-        }).join(''));
-        return JSON.parse(jsonPayload);
-    }
-
-    if (!token && !isSharedView) {
-        window.location.href = '/static/login.html';
-        return;
-    }
-
-    if (token) {
-        try {
-            const user = parseJwt(token);
-            const userDisplay = document.getElementById('user-display');
-            if (userDisplay && user.sub) {
-                userDisplay.textContent = `Hi, ${user.sub}`;
-                userDisplay.classList.remove('hidden');
-            }
-        } catch (e) {
-            console.error("Invalid token", e);
-        }
-    }
-
-    if (isSharedView) {
-        // Read-Only Mode UI Adjustments
-        document.body.classList.add('read-only-mode');
-        if (addBtn) addBtn.style.display = 'none';
-        if (btnManageCuisines) btnManageCuisines.style.display = 'none';
-        if (btnManageGroups) btnManageGroups.style.display = 'none';
-        if (logoutBtn) logoutBtn.style.display = 'none'; // Hide by default, re-enable if token exists below
-    }
-
-    async function authFetch(url, options = {}) {
-        if (isSharedView && options.method && options.method !== 'GET') {
-            alert("View Only Mode");
-            return { ok: false };
-        }
-
-        const headers = options.headers || {};
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const res = await fetch(url, { ...options, headers });
-
-        if (res.status === 401) {
-            localStorage.removeItem('access_token');
-            window.location.href = '/static/login.html';
-            return res;
-        }
-        return res;
-    }
-
-    // --- State & Variables ---
-    let map;
-    let markers = {}; // id -> marker
-    let restaurants = [];
-    let cuisines = [];
-    let groups = [];
-    const tileLayerUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
-    let currentTileLayer;
-    let userLocation = null;
-    let editingId = null; // Track if we are editing
-    let selectedId = null; // Track selected restaurant
-
-    // Logout Logic
-    // logoutBtn defined at top (line 27)
-    // Auth Layout Logic
-    if (token) {
-        if (logoutBtn) { logoutBtn.classList.remove('hidden'); logoutBtn.style.display = ''; }
-        if (loginBtn) loginBtn.classList.add('hidden');
-    } else {
-        if (logoutBtn) { logoutBtn.classList.add('hidden'); logoutBtn.style.display = 'none'; }
-        if (loginBtn) loginBtn.classList.remove('hidden');
-    }
-
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', () => {
-            localStorage.removeItem('access_token');
-            window.location.href = '/static/login.html';
-        });
-    }
-    if (loginBtn) {
-        loginBtn.addEventListener('click', () => {
-            window.location.href = '/static/login.html';
-        });
-    }
-
-    // Icon Factory for DivIcon (Allows separate animation of pin vs shadow)
-    function createDivIcon(color) {
-        const markerUrl = color === 'green'
-            ? 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png'
-            : 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png';
-
-        return L.divIcon({
-            className: 'bg-transparent border-0', // Remove default styles
-            html: `
-                <div class="relative w-full h-full">
-                    <img src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png" 
-                         class="absolute top-0 left-0" 
-                         style="width: 41px; height: 41px; margin-left: 0; max-width: none;">
-                    <img src="${markerUrl}" 
-                         class="absolute top-0 left-0 w-full h-full marker-pin" 
-                         style="max-width: none;">
-                </div>
-            `,
-            iconSize: [25, 41],
-            iconAnchor: [12, 41],
-            popupAnchor: [1, -34]
-        });
-    }
-
-    const blueIcon = createDivIcon('blue');
-    const greenIcon = createDivIcon('green');
-
     // --- DOM Elements ---
     const listContainer = document.getElementById('restaurant-list');
     const cuisineFilter = document.getElementById('filter-cuisine');
@@ -170,15 +25,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Modal & Form
     const modal = document.getElementById('modal-overlay');
     const modalTitle = document.getElementById('modal-title');
-    const modalContent = modal.querySelector('.modal-anim'); // for animation
+    const modalContent = modal.querySelector('.modal-anim');
     // addBtn defined at top
     const closeModalBtn = document.getElementById('modal-close');
     const addForm = document.getElementById('add-form');
-    const searchInput = document.getElementById('search-input');
-    const searchBtn = document.getElementById('search-btn');
-    if (searchBtn) searchBtn.classList.add('hidden'); // Hide search button as Autocomplete is interactive
+    // Main filter search
+    const searchInput = document.getElementById('filter-search');
     const searchResultsList = document.getElementById('search-results');
-
     const toggleNewCuisine = document.getElementById('toggle-new-cuisine');
     const formCuisineNew = document.getElementById('form-cuisine-new');
 
@@ -206,11 +59,265 @@ document.addEventListener('DOMContentLoaded', () => {
     const chooseStep1 = document.getElementById('choose-step-1');
     const chooseStep2 = document.getElementById('choose-step-2');
 
+    console.log("DOM Elements Check:", {
+        listContainer: !!listContainer,
+        btnManageGroups: !!document.getElementById('btn-manage-groups'),
+        modalGroups: !!modalGroups,
+        manageGroupsList: !!manageGroupsList
+    });
+
     // Mobile Tabs
     const tabList = document.getElementById('tab-list');
     const tabMap = document.getElementById('tab-map');
     const listView = document.getElementById('list-view');
     const mapView = document.getElementById('map-view');
+
+    // Sort Select (Dynamic)
+    const sortSelect = document.createElement('select');
+    sortSelect.className = "bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100 rounded px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500";
+    sortSelect.innerHTML = `
+        <option value="name">Sort: A-Z</option>
+        <option value="rating">Sort: Best Rated</option>
+    `;
+    const filterBar = document.querySelector('.overflow-x-auto');
+    if (filterBar) {
+        filterBar.appendChild(sortSelect);
+    }
+
+    // --- Authentication & Sharing State ---
+
+    // --- Authentication & Sharing State ---
+
+    let currentUser = null;
+
+    // --- Check for OAuth Redirect Token ---
+    // NO LONGER NEEDED - Cookie set by backend on redirect
+
+    const pathParts = window.location.pathname.split('/');
+    const isSharedView = pathParts[1] === 'share';
+    const sharedToken = isSharedView ? pathParts[2] : null;
+
+    // Dom Elements that need hiding in shared mode
+    const addBtn = document.getElementById('add-btn');
+    const btnManageCuisines = document.getElementById('btn-manage-cuisines');
+    const btnManageGroups = document.getElementById('btn-manage-groups');
+    const logoutBtn = document.getElementById('logout-btn');
+    const loginBtn = document.getElementById('login-btn');
+    const userDisplay = document.getElementById('user-display');
+
+    async function checkLogin() {
+        if (isSharedView) {
+            handleSharedViewMode();
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/users/me');
+            if (res.ok) {
+                const user = await res.json();
+                handleLoginSuccess(user);
+            } else {
+                handleGuestMode();
+            }
+        } catch (e) {
+            handleGuestMode();
+        }
+    }
+
+    function handleLoginSuccess(user) {
+        currentUser = user;
+        // UI Updates
+        if (logoutBtn) { logoutBtn.classList.remove('hidden'); logoutBtn.style.display = ''; }
+        if (loginBtn) loginBtn.classList.add('hidden');
+        if (userDisplay) {
+            userDisplay.textContent = `Hi, ${user.username}`;
+            userDisplay.classList.remove('hidden');
+        }
+
+        // Load Data
+        loadGroups();
+        loadCuisines();
+        loadRestaurants();
+        loadGooglePlaces();
+    }
+
+    function handleGuestMode() {
+        currentUser = null;
+        document.body.classList.add('guest-mode');
+
+        // Hide Admin UI
+        if (addBtn) addBtn.style.display = 'none';
+        if (btnManageCuisines) btnManageCuisines.style.display = 'none';
+        if (btnManageGroups) btnManageGroups.style.display = 'none';
+        if (logoutBtn) { logoutBtn.classList.add('hidden'); logoutBtn.style.display = 'none'; }
+        if (loginBtn) loginBtn.classList.remove('hidden');
+        if (userDisplay) userDisplay.classList.add('hidden');
+
+        // Load public lists by default
+        loadPublicGroups();
+    }
+
+    function handleSharedViewMode() {
+        // Read-Only Mode UI Adjustments
+        document.body.classList.add('read-only-mode');
+        if (addBtn) addBtn.style.display = 'none';
+        if (btnManageCuisines) btnManageCuisines.style.display = 'none';
+        if (btnManageGroups) btnManageGroups.style.display = 'none';
+        if (logoutBtn) logoutBtn.style.display = 'none';
+
+        loadRestaurants(); // Load shared data
+    }
+
+    // Init
+    checkLogin();
+
+    async function loadPublicGroups() {
+        const res = await fetch('/api/groups/public'); // Public endpoint, no auth needed
+        if (res.ok) {
+            const publicGroups = await res.json();
+            renderPublicGroups(publicGroups);
+        }
+    }
+
+    function renderPublicGroups(groups) {
+        listContainer.innerHTML = '<h2 class="text-lg font-bold mb-4 px-4 text-gray-800 dark:text-gray-100">✨ Explore Published Lists</h2>';
+
+        if (groups.length === 0) {
+            listContainer.innerHTML += '<div class="text-center text-gray-500">No published lists yet.</div>';
+            return;
+        }
+
+        groups.forEach(g => {
+            const card = document.createElement('div');
+            card.className = "bg-white dark:bg-gray-800 p-4 mb-3 rounded-lg shadow border border-gray-200 dark:border-gray-700 cursor-pointer hover:shadow-md transition mx-4";
+
+            // Display owner name if available
+            let ownerHtml = '';
+            if (g.owner && g.owner.username) {
+                ownerHtml = `<p class="text-xs text-gray-500 dark:text-gray-400 mt-1">by <span class="font-medium text-gray-700 dark:text-gray-300">@${escapeHtml(g.owner.username)}</span></p>`;
+            }
+
+            card.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h3 class="font-bold text-gray-900 dark:text-gray-100">${escapeHtml(g.name)}</h3>
+                        ${ownerHtml}
+                    </div>
+                    <span class="text-blue-500"><i class="fa-solid fa-arrow-right"></i></span>
+                </div>
+             `;
+            card.addEventListener('click', () => loadPublicListRestaurants(g));
+            listContainer.appendChild(card);
+        });
+    }
+
+    async function loadPublicListRestaurants(groupOrId) {
+        // Handle both object (from click) and ID (potential future direct link)
+        let groupId = groupOrId;
+        let groupName = "List";
+        let ownerName = null;
+
+        if (typeof groupOrId === 'object') {
+            groupId = groupOrId.id;
+            groupName = groupOrId.name;
+            if (groupOrId.owner) ownerName = groupOrId.owner.username;
+        }
+
+        listContainer.innerHTML = '<div class="text-center text-gray-500 mt-10">Loading list...</div>';
+        try {
+            const res = await fetch(`/api/groups/${groupId}/public`);
+            if (!res.ok) throw new Error("Failed to load");
+            restaurants = await res.json();
+
+            // Add a "Back to Lists" button and Header
+            const headerDiv = document.createElement('div');
+            headerDiv.className = "px-4 mb-4";
+
+            let ownerHtml = '';
+            if (ownerName) {
+                ownerHtml = `<span class="text-sm font-normal text-gray-500 dark:text-gray-400 ml-2">by @${escapeHtml(ownerName)}</span>`;
+            }
+
+            headerDiv.innerHTML = `
+                <button id="back-to-lists-btn" class="mb-2 text-blue-500 hover:underline text-sm flex items-center gap-1">
+                    <i class="fa-solid fa-arrow-left"></i> Back to Lists
+                </button>
+                <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-baseline">
+                    ${escapeHtml(groupName)}
+                    ${ownerHtml}
+                </h2>
+            `;
+
+            renderRestaurants(restaurants);
+            listContainer.insertBefore(headerDiv, listContainer.firstChild);
+
+            document.getElementById('back-to-lists-btn').addEventListener('click', () => loadPublicGroups());
+
+        } catch (e) {
+            listContainer.innerHTML = '<div class="text-center text-red-500">Error loading list.</div>';
+        }
+    }
+
+
+    // User display logic moved to handleLoginSuccess
+
+    // Shared view logic moved to handleSharedViewMode
+
+    async function authFetch(url, options = {}) {
+        if (isSharedView && options.method && options.method !== 'GET') {
+            alert("View Only Mode");
+            return { ok: false };
+        }
+
+        const headers = options.headers || {};
+        // No more Authorization header injection!
+
+        const res = await fetch(url, { ...options, headers });
+
+        if (res.status === 401) {
+            // If checking login state, don't reload to avoid loops if checkLogin fails
+            if (!url.includes('/api/users/me')) {
+                window.location.href = '/'; // Go to Guest Mode
+            }
+            return res;
+        }
+        return res;
+    }
+
+    // --- State & Variables ---
+    let map;
+    let markers = {}; // id -> marker
+    let restaurants = [];
+    let cuisines = [];
+    let groups = [];
+    const tileLayerUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+    let currentTileLayer;
+    let userLocation = null;
+    let editingId = null; // Track if we are editing
+    let selectedId = null; // Track selected restaurant
+
+    // Logout Logic
+    // logoutBtn defined at top (line 27)
+    // Auth Layout Logic handled by checkLogin()
+
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+            } catch (e) {
+                console.error("Logout failed", e);
+            }
+            window.location.href = '/';
+        });
+    }
+    if (loginBtn) {
+        loginBtn.addEventListener('click', () => {
+            window.location.href = '/static/login.html';
+        });
+    }
+
+    // Icon Factory for DivIcon (Allows separate animation of pin vs shadow)
+    // Icons handled by getStatusIcon now
 
     // --- Initialization ---
 
@@ -282,9 +389,110 @@ document.addEventListener('DOMContentLoaded', () => {
         const res = await authFetch('/api/groups');
         if (res.ok) {
             groups = await res.json();
-            renderGroupOptions();
+            try {
+                renderGroupOptions();
+            } catch (e) {
+                console.error("renderGroupOptions failed:", e);
+            }
+            try {
+                renderManageGroups(); // Also render the manage list
+            } catch (e) {
+                console.error("renderManageGroups failed:", e);
+            }
+        } else {
+            console.error("Failed to load groups");
         }
     }
+
+    // New: Render Manage Groups List with Toggle
+    function renderManageGroups() {
+        console.log("renderManageGroups called", groups);
+        if (!manageGroupsList) {
+            console.error("manageGroupsList element not found!");
+            return;
+        }
+        manageGroupsList.innerHTML = '';
+        groups.forEach(g => {
+            console.log("Rendering group:", g.name, "Published:", g.is_published);
+            const li = document.createElement('li');
+            li.className = "p-3 flex justify-between items-center group";
+            li.innerHTML = `
+                <span class="text-gray-800 dark:text-gray-200">${escapeHtml(g.name)}</span>
+                <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-2 cursor-pointer select-none" title="Toggle Public visibility">
+                        <span class="text-xs text-gray-500 dark:text-gray-400 font-medium">Public</span>
+                        <input type="checkbox" class="toggle-publish accent-blue-600 w-4 h-4 cursor-pointer" data-id="${g.id}" ${g.is_published ? 'checked' : ''}>
+                    </label>
+                    <button class="text-red-500 hover:text-red-700 delete-group-btn p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition" data-id="${g.id}" title="Delete Group">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </div>
+            `;
+
+            // Toggle Publish Listener
+            li.querySelector('.toggle-publish').addEventListener('change', async (e) => {
+                const isPub = e.target.checked;
+                // Optimistic update? No, let's wait.
+                const updateRes = await authFetch(`/api/groups/${g.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: g.name, is_published: isPub })
+                });
+                if (updateRes.ok) {
+                    const newG = await updateRes.json();
+                    g.is_published = newG.is_published;
+                } else {
+                    e.target.checked = !isPub; // Revert
+                    alert("Failed to update status");
+                }
+            });
+
+            li.querySelector('.delete-group-btn').addEventListener('click', async () => {
+                if (confirm(`Delete group "${g.name}"?`)) {
+                    const delRes = await authFetch(`/api/groups/${g.id}`, { method: 'DELETE' });
+                    if (delRes.ok) loadGroups();
+                }
+            });
+
+            manageGroupsList.appendChild(li);
+        });
+    }
+
+    // Modal Manage Groups Open
+    if (btnManageGroups) {
+        btnManageGroups.addEventListener('click', () => {
+            loadGroups(); // Refresh data and render
+            modalGroups.classList.remove('hidden');
+            setTimeout(() => {
+                modalGroups.querySelector('.modal-anim').classList.remove('scale-95', 'opacity-0');
+                modalGroups.querySelector('.modal-anim').classList.add('scale-100', 'opacity-100');
+            }, 10);
+        });
+    }
+    if (modalGroupsClose) {
+        modalGroupsClose.addEventListener('click', () => {
+            const content = modalGroups.querySelector('.modal-anim');
+            content.classList.remove('scale-100', 'opacity-100');
+            content.classList.add('scale-95', 'opacity-0');
+            setTimeout(() => modalGroups.classList.add('hidden'), 300);
+        });
+    }
+    if (btnAddGroup) {
+        btnAddGroup.addEventListener('click', async () => {
+            const name = inputManageGroup.value.trim();
+            if (!name) return;
+            const res = await authFetch('/api/groups', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, is_published: false })
+            });
+            if (res.ok) {
+                inputManageGroup.value = '';
+                loadGroups();
+            }
+        });
+    }
+
 
     async function loadRestaurants() {
         listContainer.innerHTML = '<div class="text-center text-gray-500 mt-10">Loading...</div>';
@@ -303,6 +511,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error('Failed to fetch');
             }
             restaurants = await res.json();
+            // Client-side filtering is still useful for immediate feedback, but let's rely on backend for initial load
+            // However, the current app structure does heavy client-side filtering in `filterRestaurants`.
+            // We should update `filterRestaurants` to trigger a fetch instead? 
+            // For now, let's keep client-side filtering for speed on small datasets, 
+            // BUT initial load should respect sort if we want persistent sort.
+            // Actually, with the new requirement "add ability to sort", backend sort is best for pagination later.
+            // Let's make the search/sort triggers reload the data from backend.
             renderRestaurants();
         } catch (e) {
             console.error(e);
@@ -336,9 +551,77 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function renderManageGroups() {
+        if (!manageGroupsList) return;
+        manageGroupsList.innerHTML = '';
+        groups.forEach(g => {
+            const li = document.createElement('li');
+            li.className = "p-3 flex justify-between items-center hover:bg-gray-50 dark:hover:bg-gray-800 transition group";
+
+            const isPub = g.is_published ? 'checked' : '';
+
+            li.innerHTML = `
+                <div class="flex items-center gap-3">
+                    <span class="text-sm font-medium text-gray-800 dark:text-gray-200">${escapeHtml(g.name)}</span>
+                    <label class="flex items-center gap-1 cursor-pointer select-none">
+                        <input type="checkbox" class="toggle-public form-checkbox h-3 w-3 text-blue-600 rounded transition duration-150 ease-in-out" data-id="${g.id}" ${isPub}>
+                        <span class="text-xs text-gray-500 dark:text-gray-400">Public?</span>
+                    </label>
+                </div>
+                <button class="delete-group-btn text-gray-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100" data-id="${g.id}">
+                    <i class="fa-solid fa-trash-can"></i>
+                </button>
+            `;
+
+            const toggle = li.querySelector('.toggle-public');
+            toggle.addEventListener('change', async (e) => {
+                const checked = e.target.checked;
+                try {
+                    const res = await authFetch(`/api/groups/${g.id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: g.name, is_published: checked })
+                    });
+                    if (res.ok) {
+                        g.is_published = checked;
+                        loadGroups();
+                        loadPublicGroups();
+                    } else {
+                        e.target.checked = !checked;
+                        alert("Failed to update group");
+                    }
+                } catch (err) {
+                    e.target.checked = !checked;
+                    alert("Network error");
+                }
+            });
+
+            const delBtn = li.querySelector('.delete-group-btn');
+            delBtn.addEventListener('click', async () => {
+                if (!confirm(`Delete group "${g.name}"?`)) return;
+                try {
+                    const res = await authFetch(`/api/groups/${g.id}`, { method: 'DELETE' });
+                    if (res.ok) {
+                        loadGroups();
+                        loadPublicGroups();
+                    } else {
+                        alert("Failed to delete group");
+                    }
+                } catch (err) {
+                    alert("Network error");
+                }
+            });
+
+            manageGroupsList.appendChild(li);
+        });
+    }
+
     function selectRestaurant(id, shouldFly = true) {
         if (selectedId && markers[selectedId]) {
-            markers[selectedId].setIcon(blueIcon);
+            // Restore original color
+            const r = restaurants.find(x => x.id == selectedId);
+            if (r) markers[selectedId].setIcon(getStatusIcon(r.status, false));
+
             const prevCard = document.querySelector(`[data-card-id="${selectedId}"]`);
             if (prevCard) prevCard.classList.remove('ring-2', 'ring-blue-500');
         }
@@ -347,7 +630,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         selectedId = id;
         if (markers[id]) {
-            markers[id].setIcon(greenIcon);
+            const r = restaurants.find(x => x.id == id);
+            if (r) markers[id].setIcon(getStatusIcon(r.status, true)); // green/active
+
             markers[id].openPopup();
             if (shouldFly) map.flyTo(markers[id].getLatLng(), 16);
 
@@ -359,18 +644,108 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function renderRestaurants() {
+    // --- Search & Filter Logic ---
+    // Refactored to Server-Side
+    async function filterRestaurants() {
+        const query = searchInput.value.trim();
+        const sortVal = sortSelect.value;
+        // Collect other filters if we were doing full server-side filtering
+        // For now, let's mix: Backend Sort/Search + Client Side Facets (Cuisine/Rating/Price/Status)
+        // Why? Because Search/Sort are the requested backend features. Facets are already working well client-side.
+        // BUT if we search "Pizza", we only get "Pizza" restaurants returned. Client-side filtering then applies to that subset.
+
+        let url = '/api/restaurants';
+        if (isSharedView) {
+            // Shared view doesn't support params yet in this impl, keep client side?
+            // Let's skip backend params for shared view for now or update backend share endpoint too.
+            url = `/api/share/${sharedToken}`;
+        } else {
+            const params = new URLSearchParams();
+            if (query) params.append('search', query);
+            if (sortVal) params.append('sort_by', sortVal);
+            url += `?${params.toString()}`;
+        }
+
+        listContainer.innerHTML = '<div class="text-center text-gray-500 mt-10">Loading...</div>';
+        const res = await authFetch(url);
+        if (res.ok) {
+            restaurants = await res.json();
+            // Now apply client-side facets
+            applyClientSideFacets();
+        }
+    }
+
+    function applyClientSideFacets() {
+        // This is the old filterRestaurants logic, applied to the (potentially) filtered dataset
+        const filtered = restaurants.filter(r => {
+            // Note: Name/Address search is now backend, but we keep it here just in case? 
+            // actually if we duplicate it, it's fine.
+            const matchesCuisine = !cuisineFilter.value || (r.cuisines && r.cuisines.some(c => c.id == cuisineFilter.value));
+            const matchesRating = !ratingFilter.value || (r.rating >= ratingFilter.value);
+            const matchesPrice = !priceFilter.value || (r.price_range == priceFilter.value);
+            const matchesStatus = !statusFilter || !statusFilter.value || (r.status == statusFilter.value);
+            const matchesGroup = !groupFilter || !groupFilter.value || (r.groups && r.groups.some(g => g.id == groupFilter.value));
+
+            return matchesCuisine && matchesRating && matchesPrice && matchesStatus && matchesGroup;
+        });
+        renderRestaurants(filtered);
+    }
+
+
+    // --- Icons ---
+    function getStatusIcon(status, isSelected) {
+        let color = 'blue';
+        let iconType = 'marker'; // Default pin
+
+        if (isSelected) {
+            color = 'green';
+        } else if (status === 'Favorite') {
+            color = 'gold';
+        } else if (status === 'Visited') {
+            color = 'violet';
+        } else if (status === 'Want to go') {
+            color = 'blue';
+        }
+
+        // Leaflet-color-markers supports: blue, gold, red, green, orange, yellow, violet, grey, black
+        const markerUrl = `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`;
+
+        return L.divIcon({
+            className: 'bg-transparent border-0',
+            html: `
+                <div class="relative w-full h-full">
+                    <img src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png" 
+                         class="absolute top-0 left-0" 
+                         style="width: 41px; height: 41px; margin-left: 0; max-width: none;">
+                    <img src="${markerUrl}" 
+                         class="absolute top-0 left-0 w-full h-full marker-pin" 
+                         style="max-width: none;">
+                </div>
+            `,
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34]
+        });
+    }
+
+    function renderRestaurants(listToRender = null) {
         listContainer.innerHTML = '';
         for (const id in markers) map.removeLayer(markers[id]);
         markers = {};
 
-        if (restaurants.length === 0) {
+        const data = listToRender || restaurants;
+
+        listContainer.innerHTML = '';
+        for (const id in markers) map.removeLayer(markers[id]);
+        markers = {};
+
+        if (data.length === 0) {
             listContainer.innerHTML = '<div class="text-center mt-10 text-gray-400">No restaurants found.</div>';
             return;
         }
 
         const bounds = [];
-        restaurants.forEach(r => {
+        data.forEach(r => {
             // Join cuisine names
             const cuisineNames = r.cuisines ? r.cuisines.map(c => c.name).join(', ') : '';
 
@@ -440,7 +815,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             listContainer.appendChild(card);
 
-            const marker = L.marker([r.latitude, r.longitude], { icon: blueIcon }).addTo(map).bindPopup(`<b>${r.name}</b><br><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.name + ", " + r.address)}" target="_blank" class="text-blue-500 hover:underline">${r.address}</a>`);
+            // Use correct icon based on status
+            const icon = getStatusIcon(r.status, false);
+            const marker = L.marker([r.latitude, r.longitude], { icon: icon }).addTo(map).bindPopup(`<b>${escapeHtml(r.name)}</b><br><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.name + ", " + r.address)}" target="_blank" class="text-blue-500 hover:underline">${escapeHtml(r.address)}</a>`);
             marker.on('click', () => selectRestaurant(r.id, false));
             marker.on('popupclose', () => { if (selectedId === r.id) selectRestaurant(null); });
             markers[r.id] = marker;
@@ -618,11 +995,30 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => modal.classList.add('hidden'), 300);
     };
 
-    cuisineFilter.addEventListener('change', loadRestaurants);
-    ratingFilter.addEventListener('change', loadRestaurants);
-    priceFilter.addEventListener('change', loadRestaurants);
-    if (statusFilter) statusFilter.addEventListener('change', loadRestaurants);
-    if (groupFilter) groupFilter.addEventListener('change', loadRestaurants);
+    // Event Listeners for new logic
+    // Debounce search
+    let searchTimeout;
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(filterRestaurants, 300);
+        });
+    }
+
+    // Sort listener
+    sortSelect.addEventListener('change', filterRestaurants);
+
+    // Facet listeners -> trigger applyClientSideFacets directly if we have data, OR refetch? 
+    // To match previous behavior (instant), applyClientSideFacets is enough provided 'restaurants' is populated.
+    // However, if we want to support "Search for Pizza" AND "Filter by $$$", we need to know if we should refetch.
+    // Since 'filterRestaurants' fetches based on search/sort, and 'restaurants' holds that result,
+    // we just need to re-run applyClientSideFacets when facets change.
+    cuisineFilter.addEventListener('change', applyClientSideFacets);
+    ratingFilter.addEventListener('change', applyClientSideFacets);
+    priceFilter.addEventListener('change', applyClientSideFacets);
+    if (statusFilter) statusFilter.addEventListener('change', applyClientSideFacets);
+    if (groupFilter) groupFilter.addEventListener('change', applyClientSideFacets);
+
     themeToggle.addEventListener('click', () => {
         body.classList.toggle('dark');
         updateMapStyle();
@@ -646,8 +1042,9 @@ document.addEventListener('DOMContentLoaded', () => {
     addBtn.addEventListener('click', () => openModal(null));
     closeModalBtn.addEventListener('click', hideModal);
     modal.addEventListener('click', (e) => { if (e.target === modal) hideModal(); });
-    // searchBtn.addEventListener('click', () => searchPlace(searchInput.value));
-    // searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchPlace(searchInput.value); } });
+
+    // Real-time local search listener removed (handled above) 
+
     toggleNewCuisine.addEventListener('click', (e) => {
         e.preventDefault();
         formCuisineNew.classList.toggle('hidden');
@@ -821,81 +1218,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Manage Groups ---
     // (DOM Elements moved to top)
 
-    function openManageGroups() {
-        renderManageGroups();
-        modalGroups.classList.remove('hidden');
-        setTimeout(() => { modalGroups.querySelector('.modal-anim').classList.remove('scale-95', 'opacity-0'); modalGroups.querySelector('.modal-anim').classList.add('scale-100', 'opacity-100'); }, 10);
-    }
-    function closeManageGroups() {
-        const content = modalGroups.querySelector('.modal-anim'); content.classList.remove('scale-100', 'opacity-100'); content.classList.add('scale-95', 'opacity-0'); setTimeout(() => modalGroups.classList.add('hidden'), 300);
-    }
-    function renderManageGroups() {
-        if (groups.length === 0) { manageGroupsList.innerHTML = '<li class="p-4 text-center text-gray-400">No groups.</li>'; return; }
-        let html = '';
-        groups.forEach(g => {
-            html += `
-                <li class="p-3 flex justify-between items-center hover:bg-gray-50 dark:hover:bg-gray-800 transition">
-                    <span class="text-sm font-medium text-gray-800 dark:text-gray-200">${escapeHtml(g.name)}</span>
-                    <div class="flex gap-2">
-                        <button class="share-group-btn text-blue-400 hover:text-blue-600 transition" data-id="${g.id}" title="Share Group">
-                            <i class="fa-solid fa-share-nodes"></i>
-                        </button>
-                        <button class="delete-group-btn text-gray-300 hover:text-red-500 transition" data-id="${g.id}">
-                            <i class="fa-solid fa-trash-can"></i>
-                        </button>
-                    </div>
-                </li>`;
-        });
-        manageGroupsList.innerHTML = html;
 
-        // Listeners
-        manageGroupsList.querySelectorAll('.delete-group-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const id = btn.dataset.id;
-                if (!confirm(`Delete this group?`)) return;
-                try {
-                    const res = await authFetch(`/api/groups/${id}`, { method: 'DELETE' });
-                    if (res.ok) { await loadGroups(); await loadRestaurants(); renderManageGroups(); }
-                    else { const err = await res.json(); alert(err.detail || 'Error'); }
-                } catch (e) { alert('Network error'); }
-            });
-        });
-
-        manageGroupsList.querySelectorAll('.share-group-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const id = btn.dataset.id;
-                try {
-                    // Generate Token
-                    const res = await authFetch(`/api/groups/${id}/share`, { method: 'POST' });
-                    if (res.ok) {
-                        const data = await res.json();
-                        const url = `${window.location.origin}/share/${data.share_token}`;
-                        prompt("Copy this link to share:", url);
-                    } else {
-                        alert("Error generating share link");
-                    }
-                } catch (e) { alert('Network error'); }
-            });
-        });
-    }
-    async function addGroup() {
-        const name = inputManageGroup.value.trim();
-        if (!name) return;
-        const res = await authFetch('/api/groups', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-        if (res.ok) { inputManageGroup.value = ''; await loadGroups(); renderManageGroups(); }
-    }
-
-    if (btnManageGroups) btnManageGroups.addEventListener('click', openManageGroups);
-    if (modalGroupsClose) modalGroupsClose.addEventListener('click', closeManageGroups);
-    if (modalGroups) modalGroups.addEventListener('click', (e) => { if (e.target === modalGroups) closeManageGroups(); });
-    if (btnAddGroup) btnAddGroup.addEventListener('click', addGroup);
 
     // Boot
     initMap();
-    if (!isSharedView) {
-        loadCuisines();
-        loadGroups();
-        loadGooglePlaces();
+    // Logic for loading data is handled at the top of the file (lines 123+) based on token/view
+    if (isSharedView) {
+        loadRestaurants();
     }
-    loadRestaurants();
 });

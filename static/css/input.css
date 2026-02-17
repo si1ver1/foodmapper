@@ -1,3 +1,27 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Custom Utilities */
+.modal-anim {
+    transition: all 0.3s ease-out;
+}
+
+body.guest-mode .guest-hidden {
+    display: none !important;
+}
+
+/* Toggle Switch Styles */
+.toggle-publish:checked~.toggle-bg {
+    background-color: #2563eb;
+    /* blue-600 */
+}
+
+.toggle-publish:checked~.dot {
+    transform: translateX(100%);
+}
+
+/* Dark Mode Map Tiles */
+.dark-map-tiles {
+    filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+}
