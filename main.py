@@ -19,6 +19,8 @@ load_dotenv()
 
 models.Base.metadata.create_all(bind=engine)
 
+print(f"--- Database Connection: {engine.url} ---")
+
 app = FastAPI()
 
 # --- Auth Configuration ---
